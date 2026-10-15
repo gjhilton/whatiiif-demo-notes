@@ -3,13 +3,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readContent } from './content.js';
 import { slice } from './slice.js';
-import { applyBudget } from './budget.js';
+import { PAGES_BUDGET_BYTES, applyBudget } from './budget.js';
 import { missingFiles } from './service.js';
 import { buildManifest } from './manifest.js';
 import { committedToLfs, originalUrl, repositoryIsPublic } from './original.js';
-import { cardImage, makeIcon, personalisePage } from './page.js';
+import { makeCard, makeIcon, personalisePage, wholeImage } from './page.js';
 
 const LOCAL_BASE_URL = 'http://localhost:4173';
+const LOWEST_QUALITY = 45; // below this, JPEG tiles look blocky up close
+
+const megabytes = (bytes) => `${(bytes / 1024 / 1024).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+
+/** The JPEG qualities to try, best first: the one asked for, then lower ones until the site fits GitHub Pages. */
+const qualities = (asked) => [asked, ...[75, 65, 55, LOWEST_QUALITY].filter((quality) => quality < asked)];
 
 /** Where visitors can download the picture the site was made from, if they can and its owner wants them to. */
 async function original(image, config, env) {
@@ -26,11 +32,11 @@ async function original(image, config, env) {
  * built already, its title, colours, social-card tags, the fallback shown without JavaScript, and site.json again.
  * `warn` is told about anything the owner may want to put right that does not stop the build.
  */
-export async function build({ contentDir, outDir, env = process.env, log = () => {}, warn = log, fetch = globalThis.fetch }) {
+export async function build({ contentDir, outDir, env = process.env, log = () => {}, warn = log, fetch = globalThis.fetch, budgetBytes = PAGES_BUDGET_BYTES }) {
   const downloads = await mkdtemp(join(tmpdir(), 'whatiiif-picture-'));
   try {
-    const { image, config, description, languages, notes } = await readContent(contentDir, { fetch, downloads });
-    for (const note of notes) warn(note);
+    const { image, config, settings, description, notes, languages, unused } = await readContent(contentDir, { fetch, downloads });
+    for (const file of unused) warn(file);
 
     const baseUrl = (config.base_url ?? env.SITE_BASE_URL ?? LOCAL_BASE_URL).replace(/\/+$/, '');
     const pageUrl = `${baseUrl}/`;
@@ -38,13 +44,41 @@ export async function build({ contentDir, outDir, env = process.env, log = () =>
     const manifestId = `${baseUrl}/iiif/manifest.json`;
     const imageDir = join(outDir, 'iiif/image');
 
-    log(`Slicing ${image.name}…`);
-    await rm(imageDir, { recursive: true, force: true }); // a rebuild must not inherit tiles from the previous image
-    const { size: tileSize, quality } = config.tiles;
-    const info = await slice({ source: image.path, outDir: imageDir, id: imageId, tileSize, quality, publishFull: config.publish.full });
-
-    const { bytes, droppedFull } = await applyBudget({ dir: imageDir, info });
+    // Sliced at the quality asked for, then, if the tiles are too big for GitHub Pages even without the full-size
+    // JPEG, again at lower qualities until they fit.
+    const { size: tileSize, quality: asked } = config.tiles;
+    let info;
+    let fitted;
+    let quality;
+    for (quality of qualities(asked)) {
+      log(`Slicing ${image.name} at quality ${quality}…`);
+      await rm(imageDir, { recursive: true, force: true }); // a rebuild must not inherit tiles from the previous image
+      info = await slice({ source: image.path, outDir: imageDir, id: imageId, tileSize, quality, publishFull: config.publish.full });
+      fitted = await applyBudget({ dir: imageDir, info, budgetBytes });
+      if (fitted.fits) break;
+    }
+    const { bytes, droppedFull } = fitted;
+    if (!fitted.fits) {
+      const scale = Math.floor(Math.sqrt(budgetBytes / bytes) * 100);
+      throw new Error(
+        `The picture is too big for GitHub Pages: its tiles take ${megabytes(bytes)} even at quality ${quality}, and ${megabytes(budgetBytes)} fit. Make it smaller: about ${scale}% of its width and height would fit.`,
+      );
+    }
     if (droppedFull) warn('The site would have been too big for GitHub Pages, so the full-size JPEG was left out.');
+    if (quality < asked) warn(`The tiles were too big for GitHub Pages at quality ${asked}, so they were made at quality ${quality}.`);
+    for (const { region: { x, y, w, h }, title } of notes?.items ?? []) {
+      if (w < 1 || h < 1 || x + w > info.width || y + h > info.height) {
+        const pixels = `${info.width.toLocaleString('en-GB')} × ${info.height.toLocaleString('en-GB')} pixels`;
+        throw new Error(
+          `content/notes.md: the note "${title[config.language]}" is about ${x},${y},${w},${h}, which runs off the picture, ${pixels}. Copy its link from "Link to this view" again.`,
+        );
+      }
+    }
+    const { dimensions } = config;
+    if (dimensions && Math.abs(dimensions.width / dimensions.height / (info.width / info.height) - 1) > 0.05) {
+      const pixels = `${info.width.toLocaleString('en-GB')} × ${info.height.toLocaleString('en-GB')} pixels`;
+      warn(`The dimensions, ${dimensions.text}, are not the shape of the picture, ${pixels}: is one of them wrong, or the picture cropped? Measurements follow the width.`);
+    }
 
     const missing = await missingFiles(imageDir);
     if (missing.length) {
@@ -53,7 +87,7 @@ export async function build({ contentDir, outDir, env = process.env, log = () =>
 
     const originalLink = await original(image, config, env);
     const hasFull = config.publish.full && !droppedFull;
-    const manifest = buildManifest({ manifestId, imageId, pageUrl, info, config, hasFull, original: originalLink && { url: originalLink, format: image.format } });
+    const manifest = buildManifest({ manifestId, imageId, pageUrl, info, config, hasFull, notes, original: originalLink && { url: originalLink, format: image.format } });
     await writeFile(join(outDir, 'iiif/manifest.json'), JSON.stringify(manifest, null, 2));
 
     const site = {
@@ -61,11 +95,15 @@ export async function build({ contentDir, outDir, env = process.env, log = () =>
       languages,
       title: config.title,
       summary: config.summary,
+      creator: config.creator,
+      date: config.date,
       attribution: config.attribution,
       alt: config.alt,
       rights: config.rights,
+      dimensions: config.dimensions,
       metadata: config.metadata,
       description,
+      notes,
       viewer: config.viewer,
       colours: config.colours,
       manifestUrl: manifestId,
@@ -81,9 +119,14 @@ export async function build({ contentDir, outDir, env = process.env, log = () =>
       pageUrl,
     };
     await writeFile(join(outDir, 'site.json'), JSON.stringify(site, null, 2));
-    const card = cardImage({ info, imageId });
-    await makeIcon(join(imageDir, card.path), join(outDir, 'icon.png'));
-    await personalisePage(join(outDir, 'index.html'), { site, image: card });
+    // For the settings helper (settings.html): the settings as written, and the page on GitHub that edits them.
+    const editUrl = env.GITHUB_REPOSITORY && `https://github.com/${env.GITHUB_REPOSITORY}/edit/${env.GITHUB_REF_NAME ?? 'main'}/content/whatiiif.toml`;
+    await writeFile(join(outDir, 'settings.json'), JSON.stringify({ settings, editUrl }, null, 2));
+    // The icon and the picture a shared link shows, cut from whole-picture files already published.
+    const whole = wholeImage({ info, imageId });
+    await makeIcon(join(imageDir, whole.path), join(outDir, 'icon.png'));
+    const card = { url: `${pageUrl}card.jpg`, ...(await makeCard(join(imageDir, wholeImage({ info, imageId, maxSide: 2000 }).path), join(outDir, 'card.jpg'))) };
+    await personalisePage(join(outDir, 'index.html'), { site, image: whole, card });
 
     log(`Done: ${Math.round(bytes / 1024 / 1024)} MB of IIIF files at ${baseUrl}/iiif/`);
     return { baseUrl, pageUrl, manifestId, bytes, droppedFull, image, card, site };
