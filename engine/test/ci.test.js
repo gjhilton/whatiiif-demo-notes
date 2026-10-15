@@ -320,6 +320,9 @@ test('a release moves the v0 tag that copies call, and only in the template', as
   assert.match(text, /^# whatiiif: template only\./);
   assert.match(text, /if: github\.event\.repository\.is_template/);
   assert.match(text, /git tag -f "\$major"/);
+  // A pre-release is for trying out: copies keep running the last full release.
+  assert.match(text, /if: github\.event\.repository\.is_template && !github\.event\.release\.prerelease/);
+  assert.match(text, /::error title=\$major still points at the previous release::.*move it by hand/, 'a tag left behind says how to move it');
 });
 
 test('packages are kept up to date in the template only, and checked before they are offered', async () => {
@@ -332,4 +335,16 @@ test('packages are kept up to date in the template only, and checked before they
   // A dependabot.yml would be copied into every site made from the template, and open pull requests there for
   // packages its Update workflow looks after.
   await assert.rejects(read(join(template, '.github/dependabot.yml')));
+});
+
+test('after each change, the Live workflow publishes the template to both demos, the plain one and the one with notes', async () => {
+  const text = await workflow('live.yml');
+  assert.match(text, /^# whatiiif: template only\./);
+  for (const [repository, key] of [['DEMO_REPOSITORY', 'DEMO_DEPLOY_KEY'], ['NOTES_DEMO_REPOSITORY', 'NOTES_DEMO_DEPLOY_KEY']]) {
+    assert.match(text, new RegExp(`- \\{ repository: ${repository}, key: ${key} \\}`), repository);
+  }
+  assert.match(text, /vars\[matrix\.demo\.repository\]/);
+  assert.match(text, /secrets\[matrix\.demo\.key\]/);
+  // The demos run publish.yml at the commit tried, so a change to it alone is tried on them too.
+  assert.match(text, /paths: \[[^\]]*'\.github\/workflows\/publish\.yml'/);
 });

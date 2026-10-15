@@ -23,7 +23,9 @@ const markdown = new Marked({
   },
 });
 
-const readOptional = (path) => readFile(path, 'utf8').catch((error) => (error.code === 'ENOENT' ? undefined : Promise.reject(error)));
+/** A text file, without the byte order mark some Windows editors start one with, which would hide its first heading. */
+const readText = async (path) => (await readFile(path, 'utf8')).replace(/^\uFEFF/, '');
+const readOptional = (path) => readText(path).catch((error) => (error.code === 'ENOENT' ? undefined : Promise.reject(error)));
 
 /** description.md, in the site's language, and description.<language>.md for any other, as HTML. */
 async function descriptions(dir, files, language) {
@@ -35,7 +37,7 @@ async function descriptions(dir, files, language) {
     if (!tag) continue;
     if (from[tag]) throw new Error(`content/${from[tag]} and content/${file} are both in ${tag}; keep one`);
     from[tag] = file;
-    html[tag] = await markdown.parse(await readFile(join(dir, file), 'utf8'));
+    html[tag] = await markdown.parse(await readText(join(dir, file)));
   }
   return Object.keys(html).length ? html : undefined;
 }
@@ -48,7 +50,7 @@ async function notesFiles(dir, files, language) {
     const tag = match && (match[1] === undefined ? language : languageCode(match[1]));
     if (!tag) continue;
     if (found[tag]) throw new Error(`content/${found[tag].file} and content/${file} are both in ${tag}; keep one`);
-    found[tag] = { file, text: await readFile(join(dir, file), 'utf8') };
+    found[tag] = { file, text: await readText(join(dir, file)) };
   }
   return Object.keys(found).length ? found : undefined;
 }
@@ -65,7 +67,7 @@ function unused(files, { images, unsupported }, image) {
       told.push(`content/${file} is not published: only ${image.name} is.`);
     } else {
       const meant = closest(file, KNOWN) ?? closest(basename(file, extname(file)), KNOWN);
-      told.push(`content/${file} is not used${meant ? `; did you mean ${meant}?` : '. content/ holds one picture, whatiiif.toml and description.md.'}`);
+      told.push(`content/${file} is not used${meant ? `; did you mean ${meant}?` : '. content/ holds one picture, whatiiif.toml, description.md and notes.md.'}`);
     }
   }
   return told;
@@ -88,18 +90,26 @@ async function download(url, dir, fetch) {
     throw new Error(`${url} is a web page, not a picture. Use a link that downloads the picture itself: on GitHub, the link of the file under a release's Assets.`);
   }
   if (!format) {
-    if (!name) throw new Error(`The picture at ${url} is not a TIFF, PNG or JPEG.`);
+    if (!name) throw new Error(`The picture at ${url} is not a TIFF, PNG, JPEG, WebP, AVIF or GIF.`);
     const told = cannotRead(`The picture at ${url}`, name);
     throw new Error(name === 'HEIC' ? told : `${told} and link to that instead.`);
   }
-  const file = basename(new URL(url).pathname);
-  let fileName;
-  try {
-    fileName = decodeURIComponent(file);
-  } catch {
-    fileName = file;
-  }
-  return { path, name: fileName || 'picture', format, bytes: (await stat(path)).size, url };
+  return { path, name: fileName(response.headers.get('content-disposition'), url) || 'picture', format, bytes: (await stat(path)).size, url };
+}
+
+/** What a downloaded file is called: what the server says (Content-Disposition), else the last part of its address. */
+function fileName(disposition, url) {
+  const decoded = (text) => {
+    try {
+      return decodeURIComponent(text);
+    } catch {
+      return text;
+    }
+  };
+  const encoded = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(disposition ?? '')?.[1];
+  const plain = /filename\s*=\s*("([^"]*)"|[^;]+)/i.exec(disposition ?? '');
+  const given = encoded ? decoded(encoded.trim()) : (plain?.[2] ?? plain?.[1])?.trim();
+  return basename(given || decoded(basename(new URL(url).pathname)));
 }
 
 /** Every language the texts are written in: the site's own first, then the rest alphabetically. */

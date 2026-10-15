@@ -68,8 +68,8 @@ The browser uploads files of up to 25 MB. For a bigger picture, see [Large pictu
 
 ## Describe your picture (optional)
 
-The easiest way is your site's **settings helper**, at `https://YOUR-USERNAME.github.io/YOUR-REPOSITORY/settings.html`.
-Fill in the form, copy what it makes, and paste it over `content/whatiiif.toml` on GitHub: the helper links to the
+The easiest way is your site's **settings helper**, at `https://YOUR-USERNAME.github.io/YOUR-REPOSITORY/settings.html`
+once your site has been built. Fill in the form, copy what it makes, and paste it over `content/whatiiif.toml` on GitHub: the helper links to the
 file, and checks everything as the build will. It starts from your site's settings as they are.
 
 ![The settings helper: the form on the left, and on the right the whatiiif.toml it writes, ready to copy](engine/artwork/settings.png)
@@ -131,6 +131,8 @@ notes about parts of the picture. Each shows as a numbered marker on the picture
 they make a tour that visitors step through, the viewer moving to each part in turn. See them on the
 [notes demo](https://gjhilton.github.io/whatiiif-demo-notes/).
 
+![The notes demo on its tour: a lighthouse in a drawing of a harbour, numbered markers on the picture, and below it the first of five notes, with Back and Next](engine/artwork/notes-demo.png)
+
 1. On your site, zoom in on the part you want to write about, and copy **Link to this view**.
 2. In your repository, open the **content** folder and choose **Add file → Create new file**. Call it `notes.md`.
 3. Write each note as a heading that links to its part of the picture, followed by what you want to say. Anything
@@ -154,13 +156,14 @@ For other languages, add `notes.cy.md` and so on, with the same notes in the sam
 links, as the notes in `notes.md` say where each part is: `## Y goleudy`.
 
 The notes are also written into the manifest, as IIIF annotations, so other IIIF viewers can show them: Mirador opens
-with its own list of them.
+with its own list of them, where there is room beside the picture.
 
 ## Change the picture
 
 Delete the old file from the `content` folder, then upload the new one. The site holds one picture at a time, so
 uploading the new one first stops the build until the old one is gone. For a picture given by its link, see
-[Large pictures](#large-pictures).
+[Large pictures](#large-pictures). If you have [notes](#going-further-notes-on-the-picture-and-a-tour), their links
+point at parts of the old picture, so copy them again from the new one; the build stops if one no longer fits.
 
 ## If something goes wrong
 
@@ -174,6 +177,7 @@ Most messages say what to fix; for some, this table says more:
 | … is not supported yet | Save the picture as TIFF, PNG or JPEG and upload that instead. |
 | … is an iPhone photo (HEIC) | Make it a JPEG: on a Mac, open it in Preview and choose **File → Export**, then JPEG. |
 | content/whatiiif.toml: … | Fix the setting it names; the message says how. |
+| content/notes.md: … | Fix the note it names; the message says how. |
 | Could not download the picture at … | Check the `picture` link: paste it into a private browser window, and it should download the picture. |
 | Timeout reached, or Deployment cancelled | GitHub Pages was slow. Re-running may not help: make any small change, such as a line in `content/whatiiif.toml`, and commit it to start afresh. |
 

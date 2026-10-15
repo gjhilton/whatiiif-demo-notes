@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseConfig } from '../lib/config.js';
-import { writeConfig } from '../lib/write-config.js';
+import { withLanguage, writeConfig } from '../lib/write-config.js';
 
 const files = {
   'no settings at all': '',
@@ -66,4 +66,19 @@ test('it writes only what differs from the defaults, plain text where a text is 
 test('what a form gives it, blank texts and dimensions as typed, is written as the file would have them', () => {
   const form = { ...parseConfig(''), title: { en: 'Harbour', cy: '  ' }, summary: { en: '' }, dimensions: '120 × 80 cm' };
   assert.deepEqual(parseConfig(writeConfig(form)), { ...parseConfig(''), title: { en: 'Harbour' }, dimensions: { width: 120, height: 80, unit: 'cm', text: '120 × 80 cm' } });
+});
+
+test('a number left blank in the form is left out of the file, so the default is used', () => {
+  const form = { ...parseConfig(''), tiles: { size: Number.NaN, quality: 70 } };
+  assert.deepEqual(parseConfig(writeConfig(form)).tiles, { size: 512, quality: 70 });
+});
+
+test('changing the language of the texts takes them with it, except where the new language has its own already', () => {
+  const settings = parseConfig('title = { en = "Harbour", cy = "Harbwr" }\nsummary = "Boats coming home."\n[[metadata]]\nlabel = "Medium"\nvalue = "Oil"');
+  const welsh = withLanguage(settings, 'cy');
+  assert.equal(welsh.language, 'cy');
+  assert.deepEqual(welsh.title, { en: 'Harbour', cy: 'Harbwr' }, 'the Welsh title stays; the English one is a translation');
+  assert.deepEqual(welsh.summary, { cy: 'Boats coming home.' });
+  assert.deepEqual(welsh.metadata, [{ label: { cy: 'Medium' }, value: { cy: 'Oil' } }]);
+  assert.deepEqual(withLanguage(withLanguage(settings, 'c'), 'cy').summary, { cy: 'Boats coming home.' }, 'as the code is typed, letter by letter');
 });
